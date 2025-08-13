@@ -89,6 +89,7 @@ const authenticate = (allowedRoles = []) => {
     }
 
     const token = authHeader.split(" ")[1];
+    console.log("🚀 ~ authenticate ~ token:", token);
 
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);

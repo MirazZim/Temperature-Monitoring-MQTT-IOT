@@ -21,6 +21,7 @@ class MqttHandler {
     this.mqttClient.on("message", async (topic, message) => {
       const parts = topic.split("/");
       const userId = parseInt(parts[1]);
+      console.log("userid", userId);
       if (!userId) return;
 
       const tempValue = parseFloat(message.toString());
@@ -42,30 +43,32 @@ class MqttHandler {
   }
 
   async startSimulation() {
-    try {
-      // Get all users to simulate temperature for each
-      const users = await User.getAll();
+    console.log("🔄 Starting temperature simulation...");
 
-      if (users.length === 0) {
-        console.log("⚠️ No users found for temperature simulation");
-        return;
-      }
+    this.simulationInterval = setInterval(async () => {
+      try {
+        // Fetch users EVERY time to get newly registered users
+        const users = await User.getAll();
 
-      console.log(
-        `🔄 Starting temperature simulation for ${users.length} users`
-      );
+        if (users.length === 0) {
+          console.log("⚠️ No users found for temperature simulation");
+          return;
+        }
 
-      this.simulationInterval = setInterval(() => {
+        console.log(`📡 Simulating temperature for ${users.length} users`);
+
         users.forEach((user) => {
           const tempValue = (Math.random() * 14 + 18).toFixed(2);
           const topic = `home/${user.id}/temperature`;
           this.mqttClient.publish(topic, tempValue);
-          console.log(`📡 Published ${tempValue}°C for user ${user.id}`);
+          console.log(
+            `📤 Published ${tempValue}°C for user ${user.id} (${user.username})`
+          );
         });
-      }, 10000); // Every 10 seconds
-    } catch (error) {
-      console.error("❌ Error starting simulation:", error);
-    }
+      } catch (error) {
+        console.error("❌ Error in temperature simulation:", error);
+      }
+    }, 10000); // Every 10 seconds
   }
 
   stopSimulation() {

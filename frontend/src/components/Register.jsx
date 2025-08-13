@@ -29,7 +29,7 @@ export default function Register() {
         throw new Error(data.error || 'Registration failed');
       }
 
-      const result = await response.json();
+      await response.json();
       alert(`Registration successful! Please login with your new account.`);
       navigate('/login');
     } catch (err) {
