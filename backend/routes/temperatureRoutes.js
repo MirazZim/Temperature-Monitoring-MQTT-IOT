@@ -1,11 +1,8 @@
 const express = require("express");
 const router = express.Router();
-const {
-  getAllTemperatures,
-  getLatestTemperature,
-} = require("../controllers/temperatureController");
+const { getAllTemperatures } = require("../controllers/temperatureController");
+const { adminOrUser } = require("../middleware/auth");
 
-router.get("/", getAllTemperatures);
-router.get("/latest", getLatestTemperature);
+router.get("/", adminOrUser, getAllTemperatures);
 
 module.exports = router;

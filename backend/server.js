@@ -8,107 +8,108 @@ const pool = require("./config/db");
 const authRoutes = require("./routes/authRoutes");
 const deviceRoutes = require("./routes/deviceRoutes");
 const userRoutes = require("./routes/userRoutes");
+const temperatureRoutes = require("./routes/temperatureRoutes");
 const EventEmitter = require("events");
 require("dotenv").config();
 
-// Create Express app
-const app = express();
+const MqttHandler = require("./mqtt/mqttHandler");
 
-// Middleware
-app.use(cors());
+const app = express();
+app.use(
+  cors({
+    origin: "http://localhost:5173",
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 app.use(morgan("dev"));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: "50mb", extended: true }));
 
-// Create HTTP server
 const server = http.createServer(app);
 const io = require("socket.io")(server, {
+  transports: ["polling"],
+  allowUpgrades: false,
   cors: {
     origin: "http://localhost:5173",
     methods: ["GET", "POST"],
+    credentials: true,
   },
 });
 
-const MqttHandler = require("./mqtt/mqttHandler");
-const temperatureRoutes = require("./routes/temperatureRoutes");
+// Middleware to secure Socket.io
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token;
+  if (!token) return next(new Error("Unauthorized"));
+  try {
+    socket.user = jwt.verify(token, process.env.JWT_SECRET);
+    next();
+  } catch {
+    next(new Error("Invalid token"));
+  }
+});
+
+// Auto-join user room
+io.on("connection", (socket) => {
+  socket.join(`user_${socket.user.id}`);
+  console.log(`User ${socket.user.id} joined room user_${socket.user.id}`);
+
+  socket.on("disconnect", () => {
+    console.log(
+      `Client ${socket.user.id} disconnected from temperature stream`
+    );
+  });
+});
 
 // MQTT init
 const mqttClient = new MqttHandler(io);
 mqttClient.connect();
 
-// Socket.io connection
-io.on("connection", (socket) => {
-  console.log("New client connected to temperature updates");
-  socket.on("disconnect", () =>
-    console.log("Client disconnected from temperature stream")
-  );
-});
-
-// Handle process exit
 process.on("SIGINT", () => {
   mqttClient.stopSimulation();
   process.exit();
 });
 
-// Create WebSocket server
+// WebSocket Server for device telemetry
 const wss = new WebSocket.Server({
-  server: server,
+  server,
   clientTracking: true,
   verifyClient: (info, done) => {
     const token = new URL(info.req.url, "http://localhost").searchParams.get(
       "token"
     );
-
     if (!token) return done(false, 401, "Unauthorized");
-
     jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
       if (err) return done(false, 401, "Invalid token");
-
-      // Attach user to request for later use
       info.req.user = decoded;
       done(true);
     });
   },
 });
 
-// Message emitter for real-time updates
 const messageEmitter = new EventEmitter();
 
-// Handle realtime connections
+// Handle device WebSocket connection
 wss.on("connection", (ws, req) => {
   const deviceId = new URL(req.url, "http://localhost").searchParams.get(
     "device"
   );
   const user = req.user;
-
-  console.log(
-    `WebSocket connection established for user ${user.id}, device ${deviceId}`
-  );
-
-  // Verify device access
   pool
     .query(`SELECT * FROM user_devices WHERE user_id = ? AND device_id = ?`, [
       user.id,
       deviceId,
     ])
     .then(([rows]) => {
-      if (rows.length === 0) {
-        ws.close(1008, "Device access denied");
-        return;
-      }
+      if (rows.length === 0) return ws.close(1008, "Device access denied");
 
-      // Subscribe to device messages
-      const query = `
-      SELECT * FROM messages 
-      WHERE device_id = ?
-      ORDER BY created_at DESC
-      LIMIT 100
-    `;
-
-      // Send initial batch
       pool
-        .query(query, [deviceId])
-        .then(([rows]) => {
+        .query(
+          `SELECT * FROM messages WHERE device_id = ? ORDER BY created_at DESC LIMIT 100`,
+          [deviceId]
+        )
+        .then(([rows]) =>
           ws.send(
             JSON.stringify(
               rows.map((row) => ({
@@ -116,13 +117,9 @@ wss.on("connection", (ws, req) => {
                 message: JSON.parse(row.message || "{}"),
               }))
             )
-          );
-        })
-        .catch((err) => {
-          console.error("Error fetching initial messages:", err);
-        });
+          )
+        );
 
-      // Listen for new messages
       const listener = (message) => {
         if (message.device_id === deviceId) {
           ws.send(
@@ -135,101 +132,39 @@ wss.on("connection", (ws, req) => {
           );
         }
       };
-
-      // Add to our message listeners
       messageEmitter.on("newMessage", listener);
 
-      ws.on("close", () => {
-        console.log(
-          `WebSocket connection closed for user ${user.id}, device ${deviceId}`
-        );
-        messageEmitter.off("newMessage", listener);
-      });
-
-      ws.on("error", (error) => {
-        console.error("WebSocket error:", error);
-        messageEmitter.off("newMessage", listener);
-      });
-    })
-    .catch((err) => {
-      console.error("Database error:", err);
-      ws.close(1011, "Internal error");
+      ws.on("close", () => messageEmitter.off("newMessage", listener));
+      ws.on("error", () => messageEmitter.off("newMessage", listener));
     });
 });
 
-// Message storage function
 async function storeMessage({ deviceId, topic, message, qos }) {
-  try {
-    const [result] = await pool.query(
-      "INSERT INTO messages (device_id, topic, message, qos) VALUES (?, ?, ?, ?)",
-      [deviceId, topic, JSON.stringify(message), qos]
-    );
-
-    // Emit event for realtime updates
-    messageEmitter.emit("newMessage", {
-      id: result.insertId,
-      device_id: deviceId,
-      topic,
-      message: JSON.stringify(message),
-      qos,
-      created_at: new Date(),
-    });
-
-    return result.insertId;
-  } catch (error) {
-    console.error("Error storing message:", error);
-    throw error;
-  }
+  const [result] = await pool.query(
+    "INSERT INTO messages (device_id, topic, message, qos) VALUES (?, ?, ?, ?)",
+    [deviceId, topic, JSON.stringify(message), qos]
+  );
+  messageEmitter.emit("newMessage", {
+    id: result.insertId,
+    device_id: deviceId,
+    topic,
+    message: JSON.stringify(message),
+    qos,
+    created_at: new Date(),
+  });
+  return result.insertId;
 }
-
-// Example REST API routes
-app.get("/api/devices", async (req, res) => {
-  try {
-    // Add your authentication middleware here
-    const [rows] = await pool.query("SELECT * FROM devices");
-    res.json(rows);
-  } catch (error) {
-    console.error("Error fetching devices:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-app.get("/api/messages/:deviceId", async (req, res) => {
-  try {
-    const { deviceId } = req.params;
-    const [rows] = await pool.query(
-      "SELECT * FROM messages WHERE device_id = ? ORDER BY created_at DESC LIMIT 100",
-      [deviceId]
-    );
-
-    const messages = rows.map((row) => ({
-      ...row,
-      message: JSON.parse(row.message || "{}"),
-    }));
-
-    res.json(messages);
-  } catch (error) {
-    console.error("Error fetching messages:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// Health check endpoint
-app.get("/health", (req, res) => {
-  res.json({ status: "OK", timestamp: new Date().toISOString() });
-});
 
 app.use("/api", authRoutes);
 app.use("/api", deviceRoutes);
 app.use("/api", userRoutes);
 app.use("/api/temperature", temperatureRoutes);
 
-// Start server
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`WebSocket server is ready for connections`);
+app.get("/health", (req, res) => {
+  res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// Export for use in other modules
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
 module.exports = { app, server, storeMessage, messageEmitter };

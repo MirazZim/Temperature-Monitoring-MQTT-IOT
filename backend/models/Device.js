@@ -1,45 +1,47 @@
-const express = require("express");
-const router = express.Router();
-const {
-  loginlogin,
-  register,
-  authenticate,
-  adminOnly,
-  userOnly,
-  adminOrUser,
-} = require("../middleware/auth");
-const Device = require("../models/Device");
+const pool = require("../config/db");
 
-// Get all devices (admin only)
-router.get("/", adminOnly, async (req, res) => {
-  try {
-    const devices = await Device.findAll();
-    res.json(devices);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+class Device {
+  static async create(deviceId, name, secret) {
+    const [result] = await pool.query(
+      "INSERT INTO devices (id, name, secret) VALUES (?, ?, ?)",
+      [deviceId, name, secret]
+    );
+    return result;
   }
-});
 
-// Get device data (admin or owner)
-router.get("/:id/data", adminOrUser, async (req, res) => {
-  try {
-    const deviceId = req.params.id;
-    const userId = req.user.id;
-
-    // Check if user has access to device
-    const hasAccess =
-      req.user.role === "admin" ||
-      (await Device.userHasAccess(userId, deviceId));
-
-    if (!hasAccess) {
-      return res.status(403).json({ error: "Access denied" });
-    }
-
-    const data = await Device.getMessages(deviceId);
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  static async getAll() {
+    const [rows] = await pool.query(
+      "SELECT * FROM devices ORDER BY created_at DESC"
+    );
+    return rows;
   }
-});
 
-module.exports = router;
+  static async assignToUser(userId, deviceId) {
+    const [result] = await pool.query(
+      "INSERT INTO user_devices (user_id, device_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE user_id = user_id",
+      [userId, deviceId]
+    );
+    return result;
+  }
+
+  static async userHasAccess(userId, deviceId) {
+    const [rows] = await pool.query(
+      "SELECT 1 FROM user_devices WHERE user_id = ? AND device_id = ?",
+      [userId, deviceId]
+    );
+    return rows.length > 0;
+  }
+
+  static async getMessages(deviceId) {
+    const [rows] = await pool.query(
+      "SELECT * FROM messages WHERE device_id = ? ORDER BY created_at DESC LIMIT 100",
+      [deviceId]
+    );
+    return rows.map((row) => ({
+      ...row,
+      message: JSON.parse(row.message || "{}"),
+    }));
+  }
+}
+
+module.exports = Device;

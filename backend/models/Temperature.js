@@ -1,27 +1,27 @@
 const pool = require("../config/db");
 
 class Temperature {
-  static async create(temperatureData) {
+  static async create({ user_id, value, location }) {
     const [result] = await pool.query(
-      "INSERT INTO temperatures (value, location) VALUES (?, ?)",
-      [temperatureData.value, temperatureData.location]
+      "INSERT INTO temperatures (user_id, value, location) VALUES (?, ?, ?)",
+      [user_id, value, location]
     );
     return result;
   }
 
-  static async getAll(limit = 100) {
+  static async getAll() {
     const [rows] = await pool.query(
-      "SELECT * FROM temperatures ORDER BY created_at DESC LIMIT ?",
-      [limit]
+      "SELECT * FROM temperatures ORDER BY created_at DESC"
     );
     return rows;
   }
 
-  static async getLatest() {
+  static async getAllForUser(userId) {
     const [rows] = await pool.query(
-      "SELECT * FROM temperatures ORDER BY created_at DESC LIMIT 1"
+      "SELECT * FROM temperatures WHERE user_id = ? ORDER BY created_at DESC",
+      [userId]
     );
-    return rows[0] || null;
+    return rows;
   }
 }
 

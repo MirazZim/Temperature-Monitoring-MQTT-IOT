@@ -1,5 +1,6 @@
 const mqtt = require("mqtt");
 const Temperature = require("../models/Temperature");
+const User = require("../models/User");
 
 class MqttHandler {
   constructor(io) {
@@ -11,58 +12,68 @@ class MqttHandler {
 
   connect() {
     this.mqttClient = mqtt.connect(this.host);
-
-    this.mqttClient.on("error", (err) => console.error(err));
-
     this.mqttClient.on("connect", () => {
-      console.log("MQTT connected");
-      this.mqttClient.subscribe("home/temperature", { qos: 0 });
-
-      if (process.env.SIMULATE_SENSOR === "true") {
-        this.startSimulation();
-      }
+      console.log("✅ MQTT connected");
+      this.mqttClient.subscribe("home/+/temperature", { qos: 0 });
+      if (process.env.SIMULATE_SENSOR === "true") this.startSimulation();
     });
 
     this.mqttClient.on("message", async (topic, message) => {
-      if (topic === "home/temperature") {
-        try {
-          const tempValue = parseFloat(message.toString());
-          const newTemp = await Temperature.create({
-            value: tempValue,
-            location: "living-room",
-          });
+      const parts = topic.split("/");
+      const userId = parseInt(parts[1]);
+      if (!userId) return;
 
-          if (this.io) {
-            this.io.emit("temperatureUpdate", {
-              id: newTemp.insertId,
-              value: tempValue,
-              location: "living-room",
-              created_at: new Date(),
-            });
-          }
-          console.log("Saved temperature to DB");
-        } catch (err) {
-          console.error("Error saving temperature:", err);
-        }
-      }
+      const tempValue = parseFloat(message.toString());
+      const newTemp = await Temperature.create({
+        user_id: userId,
+        value: tempValue,
+        location: "living-room",
+      });
+
+      console.log(`📊 Temperature update for user ${userId}: ${tempValue}°C`);
+
+      this.io.to(`user_${userId}`).emit("temperatureUpdate", {
+        id: newTemp.insertId,
+        value: tempValue,
+        location: "living-room",
+        created_at: new Date(),
+      });
     });
-
-    this.mqttClient.on("close", () => this.stopSimulation());
   }
 
-  startSimulation() {
-    if (this.simulationInterval) return;
-    this.simulationInterval = setInterval(() => {
-      if (!this.mqttClient.connected) return;
-      const tempValue = (Math.random() * 14 + 18).toFixed(2);
-      this.mqttClient.publish("home/temperature", tempValue);
-      console.log(`Simulated temp: ${tempValue}°C`);
-    }, 10000);
+  async startSimulation() {
+    try {
+      // Get all users to simulate temperature for each
+      const users = await User.getAll();
+
+      if (users.length === 0) {
+        console.log("⚠️ No users found for temperature simulation");
+        return;
+      }
+
+      console.log(
+        `🔄 Starting temperature simulation for ${users.length} users`
+      );
+
+      this.simulationInterval = setInterval(() => {
+        users.forEach((user) => {
+          const tempValue = (Math.random() * 14 + 18).toFixed(2);
+          const topic = `home/${user.id}/temperature`;
+          this.mqttClient.publish(topic, tempValue);
+          console.log(`📡 Published ${tempValue}°C for user ${user.id}`);
+        });
+      }, 10000); // Every 10 seconds
+    } catch (error) {
+      console.error("❌ Error starting simulation:", error);
+    }
   }
 
   stopSimulation() {
-    clearInterval(this.simulationInterval);
-    this.simulationInterval = null;
+    if (this.simulationInterval) {
+      clearInterval(this.simulationInterval);
+      this.simulationInterval = null;
+      console.log("🛑 Temperature simulation stopped");
+    }
   }
 }
 
