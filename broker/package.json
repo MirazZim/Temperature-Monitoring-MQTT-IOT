@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "keywords": [],
   "author": "",
@@ -15,6 +17,7 @@
     "aedes-server-factory": "^0.2.1",
     "bcryptjs": "^3.0.2",
     "dotenv": "^17.2.1",
-    "mysql2": "^3.14.3"
+    "mysql2": "^3.14.3",
+    "websocket-stream": "^5.5.2"
   }
 }

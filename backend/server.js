@@ -22,6 +22,33 @@ app.use(express.json({ limit: "50mb", extended: true }));
 
 // Create HTTP server
 const server = http.createServer(app);
+const io = require("socket.io")(server, {
+  cors: {
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST"],
+  },
+});
+
+const MqttHandler = require("./mqtt/mqttHandler");
+const temperatureRoutes = require("./routes/temperatureRoutes");
+
+// MQTT init
+const mqttClient = new MqttHandler(io);
+mqttClient.connect();
+
+// Socket.io connection
+io.on("connection", (socket) => {
+  console.log("New client connected to temperature updates");
+  socket.on("disconnect", () =>
+    console.log("Client disconnected from temperature stream")
+  );
+});
+
+// Handle process exit
+process.on("SIGINT", () => {
+  mqttClient.stopSimulation();
+  process.exit();
+});
 
 // Create WebSocket server
 const wss = new WebSocket.Server({
@@ -193,8 +220,9 @@ app.get("/health", (req, res) => {
 });
 
 app.use("/api", authRoutes);
-app.use(deviceRoutes);
-app.use(userRoutes);
+app.use("/api", deviceRoutes);
+app.use("/api", userRoutes);
+app.use("/api/temperature", temperatureRoutes);
 
 // Start server
 const PORT = process.env.PORT || 3000;
